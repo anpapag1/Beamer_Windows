@@ -1120,9 +1120,11 @@ class WindowsApplication(QWidget):
         module.body.addLayout(fields)
         mac_row = QHBoxLayout()
         mac_row.setSpacing(6)
-        mac_row.addWidget(widgets.label("Mac address:", "note"))
-        self.mac_host_readout = widgets.label(current.mac_host or "Not learned yet", "readout", wrap=True)
-        mac_row.addWidget(self.mac_host_readout, 1)
+        mac_row.addWidget(widgets.label("Remote machine address (PC or Mac):", "note"))
+        self.mac_host_entry = QLineEdit(current.mac_host or "")
+        self.mac_host_entry.setPlaceholderText("e.g. 192.168.1.50")
+        self.mac_host_readout = self.mac_host_entry
+        mac_row.addWidget(self.mac_host_entry, 1)
         module.body.addLayout(mac_row)
         self.save_message = widgets.label("", "note", wrap=True)
         module.body.addWidget(self.save_message)
@@ -1145,6 +1147,7 @@ class WindowsApplication(QWidget):
                 host=self.host_entry.text().strip() or self._host,
                 port=int(self.port_entry.text().strip()),
                 auth_token=self.token_entry.text(),
+                mac_host=self.mac_host_entry.text().strip(),
             )
             save_config(self.config_path, candidate)
             self._apply_config(candidate)
@@ -1176,7 +1179,7 @@ class WindowsApplication(QWidget):
             self._start_sending(config)
         else:
             self._stop_sending()
-        self.mac_host_readout.setText(config.mac_host or "Not learned yet")
+        self.mac_host_entry.setText(config.mac_host or "")
 
     # -- Firewall ---------------------------------------------------------------------------
 
@@ -1477,7 +1480,7 @@ class WindowsApplication(QWidget):
             return
         self.sender.update_config(self._config)
         self._start_sending(self._config)
-        self.mac_host_readout.setText(self._config.mac_host or "Not learned yet")
+        self.mac_host_entry.setText(self._config.mac_host or "")
         self.edge_choice.set_value(self._config.mac_return_edge)
         self._reflect_look()
 

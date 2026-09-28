@@ -44,6 +44,38 @@ class EdgeGlowConfigTests(unittest.TestCase):
             self.assertIn(key, str(caught.exception))
 
 
+class PeerTargetConfigTests(unittest.TestCase):
+    def test_defaults_to_mac_and_round_trips(self):
+        config = config_from_dict(dict(BASE))
+        self.assertEqual(config.peer_target, "mac")
+        self.assertEqual(config_to_dict(config)["peer_target"], "mac")
+
+    def test_default_config_has_peer_target_mac(self):
+        config = default_config()
+        self.assertEqual(config.peer_target, "mac")
+
+    def test_custom_peer_target_round_trips(self):
+        config = config_from_dict({**BASE, "peer_target": "windows"})
+        self.assertEqual(config.peer_target, "windows")
+        self.assertEqual(config_to_dict(config)["peer_target"], "windows")
+
+    def test_rejects_non_string_peer_target(self):
+        for bad_value in (123, True, False, ["windows"], {"target": "mac"}):
+            with self.subTest(bad_value=bad_value):
+                with self.assertRaises(ConfigError) as caught:
+                    config_from_dict({**BASE, "peer_target": bad_value})
+                self.assertIn("peer_target", str(caught.exception))
+
+    def test_persistence_to_disk(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            config = config_from_dict({**BASE, "peer_target": "windows"})
+            app_config.save_config(path, config)
+            loaded = app_config.load_config(path)
+            self.assertEqual(loaded.peer_target, "windows")
+
+
+
 class MigrateLegacyConfigTests(unittest.TestCase):
     def test_copies_without_touching_the_old_file(self):
         with tempfile.TemporaryDirectory() as directory:

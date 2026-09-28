@@ -72,6 +72,7 @@ class Config:
     # The Mac's address is learned, never typed: it is the peer address the
     # Mac's own link arrives from.
     mac_host: str = ""
+    peer_target: str = "mac"
     # The edge of THIS PC that leads to the Mac, which is both the way home
     # and the way out -- one border, walked either way. It can be set at
     # either machine and is synced over the link, so `arrangement_set_at`
@@ -201,6 +202,8 @@ def validate_config(config: Config) -> None:
         raise ConfigError("send_to_mac must be true or false")
     if not isinstance(config.mac_host, str):
         raise ConfigError("mac_host must be text")
+    if not isinstance(config.peer_target, str):
+        raise ConfigError("peer_target must be text")
     if config.mac_return_edge not in ("",) + EDGES:
         raise ConfigError("mac_return_edge must be an edge name, or empty")
     try:
@@ -238,6 +241,7 @@ def config_from_dict(raw: dict) -> Config:
             block_while_dragging=raw.get("block_while_dragging", True),
             mac_hardware_address=raw.get("mac_hardware_address", "") or "",
             mac_host=raw.get("mac_host", "") or "",
+            peer_target=raw.get("peer_target", "mac"),
             mac_return_edge=raw.get("mac_return_edge", "") or "",
             arrangement_set_at=int(raw.get("arrangement_set_at", 0)),
             mac_resistance_px=int(raw.get("mac_resistance_px", 120)),
@@ -293,6 +297,7 @@ def config_to_dict(config: Config) -> dict:
         "block_while_dragging": config.block_while_dragging,
         "mac_hardware_address": config.mac_hardware_address,
         "mac_host": config.mac_host,
+        "peer_target": config.peer_target,
         "mac_return_edge": config.mac_return_edge,
         "arrangement_set_at": int(config.arrangement_set_at),
         "mac_resistance_px": int(config.mac_resistance_px),
