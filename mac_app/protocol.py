@@ -255,31 +255,35 @@ def recv_msg(sock: socket.socket, session, limit: int = MAX_FRAME_BYTES, deadlin
     return session.open(_recv_exact(sock, length, deadline))
 
 
-def hello_msg(return_edge: str = None, resistance_px: int = None) -> dict:
+def hello_msg(return_edge: str = None, resistance_px: int = None, platform: str = None) -> dict:
     """The first encrypted frame. It carries no token: decrypting it is the
     proof the sender holds the shared secret.
 
     `return_edge` and `resistance_px` are the same pair a focus message
     carries, sent here as well so the receiver knows the way home before the
     first crossing rather than after it -- which is what lets the receiver's
-    own machine push back across that same border unprompted. Both are
-    omitted when None and unknown keys are ignored, so this needs no version
-    bump."""
+    own machine push back across that same border unprompted. `platform` announces
+    the sender's OS (e.g. "windows" or "mac") for automatic modifier mapping.
+    Unknown keys are ignored, so this needs no version bump."""
     data = {"version": PROTOCOL_VERSION}
     if return_edge is not None:
         data["return_edge"] = return_edge
     if resistance_px is not None:
         data["resistance_px"] = resistance_px
+    if platform is not None:
+        data["platform"] = platform
     return {"type": MSG_HELLO, "data": data}
 
 
-def welcome_msg(error: str = None) -> dict:
+def welcome_msg(error: str = None, platform: str = None) -> dict:
     """Sent by the receiver to confirm authentication and protocol version.
     `error` (e.g. "version_mismatch") is set when the sender's declared version
-    is not supported."""
+    is not supported. `platform` declares the receiver's OS."""
     data = {"version": PROTOCOL_VERSION}
     if error is not None:
         data["error"] = error
+    if platform is not None:
+        data["platform"] = platform
     return {"type": MSG_WELCOME, "data": data}
 
 

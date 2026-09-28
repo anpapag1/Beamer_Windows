@@ -22,9 +22,9 @@ def make_config(port=0, token="shared-token"):
 
 
 class ReceiverHandshakeTests(unittest.TestCase):
-    def _serve(self, client_token="shared-token"):
+    def _serve(self, client_token="shared-token", **server_kwargs):
         statuses = []
-        server = ReceiverServer(lambda state, detail: statuses.append((state, detail)))
+        server = ReceiverServer(lambda state, detail: statuses.append((state, detail)), **server_kwargs)
         client, connection, address = connected_socket_pair(token=client_token)
         stop_event = threading.Event()
         # _session_thread, not _handle_client: it closes the socket when the
@@ -43,11 +43,73 @@ class ReceiverHandshakeTests(unittest.TestCase):
     def test_hello_receives_welcome_and_reports_connected(self):
         statuses, client, thread = self._serve()
         client.send(protocol.hello_msg())
-        self.assertEqual(client.recv(), protocol.welcome_msg())
+        self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
         # The welcome is sent before the status callback fires on the
         # session thread, so poll rather than assert immediately.
         _, detail = wait_for_status(statuses, ServerState.CONNECTED)
         self.assertEqual(detail, "Connected to 127.0.0.1")
+
+    def test_the_welcome_declares_the_role_this_receiver_is_configured_as(self):
+        # This host is Windows, so a receiver set up as the Mac answering
+        # "windows" is the bug itself: the peer would then map its modifiers
+        # the wrong way for a Mac it is not talking to.
+        statuses, client, thread = self._serve(self_target="mac", peer_target="windows")
+        client.send(protocol.hello_msg())
+        self.assertEqual(client.recv(), protocol.welcome_msg(platform="mac"))
+
+    def test_the_hello_platform_reaches_the_peer_callback(self):
+        seen = []
+        arrived = threading.Event()
+
+        def peer_callback(*args):
+            seen.append(args)
+            arrived.set()
+
+        statuses, client, thread = self._serve(peer_callback=peer_callback)
+        client.send(protocol.hello_msg(platform="windows", return_edge="left", resistance_px=40))
+        self.assertTrue(arrived.wait(2.0), "the peer callback never fired")
+        self.assertEqual(seen[0][1:], ("left", 40, "windows"))
+
+    def test_a_hello_that_names_no_platform_is_read_as_this_receivers_own_role(self):
+        seen = []
+        arrived = threading.Event()
+
+        def peer_callback(*args):
+            seen.append(args)
+            arrived.set()
+
+        statuses, client, thread = self._serve(peer_callback=peer_callback)
+        client.send(protocol.hello_msg())
+        self.assertTrue(arrived.wait(2.0), "the peer callback never fired")
+        self.assertEqual(seen[0][3], "windows")
+
+    def test_a_silent_peer_at_a_mac_role_receiver_is_read_as_a_mac(self):
+        seen = []
+        arrived = threading.Event()
+
+        def peer_callback(*args):
+            seen.append(args)
+            arrived.set()
+
+        statuses, client, thread = self._serve(
+            peer_callback=peer_callback, self_target="mac", peer_target="windows"
+        )
+        client.send(protocol.hello_msg())
+        self.assertTrue(arrived.wait(2.0), "the peer callback never fired")
+        self.assertEqual(seen[0][3], "mac")
+
+    def test_a_declared_platform_beats_this_receivers_own_role(self):
+        seen = []
+        arrived = threading.Event()
+
+        def peer_callback(*args):
+            seen.append(args)
+            arrived.set()
+
+        statuses, client, thread = self._serve(peer_callback=peer_callback, self_target="mac")
+        client.send(protocol.hello_msg(platform="windows"))
+        self.assertTrue(arrived.wait(2.0), "the peer callback never fired")
+        self.assertEqual(seen[0][3], "windows")
 
     def test_wrong_token_is_closed_without_a_reply(self):
         statuses, client, thread = self._serve(client_token="not-the-token")
@@ -62,7 +124,7 @@ class ReceiverHandshakeTests(unittest.TestCase):
     def test_replayed_frame_drops_the_connection(self):
         statuses, client, thread = self._serve()
         client.send(protocol.hello_msg())
-        self.assertEqual(client.recv(), protocol.welcome_msg())
+        self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
         frame = client.session.seal(protocol.ping_msg())
         client.sock.sendall(frame)
         client.sock.sendall(frame)
@@ -221,7 +283,7 @@ class ReceiverPreemptionTests(unittest.TestCase):
             )
             thread_a.start()
             client_a.send(protocol.hello_msg())
-            self.assertEqual(client_a.recv(), protocol.welcome_msg())
+            self.assertEqual(client_a.recv(), protocol.welcome_msg(platform="windows"))
             wait_for_status(statuses, ServerState.CONNECTED)
 
         client_b = connection_b = thread_b = None
@@ -246,7 +308,7 @@ class ReceiverPreemptionTests(unittest.TestCase):
                 )
                 thread_b.start()
                 client_b.send(protocol.hello_msg())
-                self.assertEqual(client_b.recv(), protocol.welcome_msg())
+                self.assertEqual(client_b.recv(), protocol.welcome_msg(platform="windows"))
 
                 # A must be severed once B takes over. This is a real,
                 # server-initiated shutdown()+close() of connection_a, which
@@ -304,7 +366,7 @@ class ReceiverReadTimeoutTests(unittest.TestCase):
             thread.start()
             try:
                 client.send(protocol.hello_msg())
-                self.assertEqual(client.recv(), protocol.welcome_msg())
+                self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
                 wait_for_status(statuses, ServerState.CONNECTED)
                 # Say nothing further. A dead/half-open peer must be detected
                 # from the (now short) read timeout alone -- no TCP-level
@@ -331,7 +393,7 @@ class ReceiverPingTests(unittest.TestCase):
         thread.start()
         try:
             client.send(protocol.hello_msg())
-            self.assertEqual(client.recv(), protocol.welcome_msg())
+            self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
             client.send(protocol.ping_msg())
             client.send(protocol.ping_msg())
             # A ping never bumps the processed sequence, so every ack the
@@ -407,7 +469,7 @@ class ReceiverAckTests(unittest.TestCase):
             thread.start()
             try:
                 client.send(protocol.hello_msg())
-                self.assertEqual(client.recv(), protocol.welcome_msg())
+                self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
                 for _ in range(3):
                     client.send({"type": protocol.MSG_MOUSEMOVE, "data": {"dx": 1, "dy": 1}}
                     )
@@ -440,7 +502,7 @@ class ReceiverAckTests(unittest.TestCase):
             thread.start()
             try:
                 client.send(protocol.hello_msg())
-                self.assertEqual(client.recv(), protocol.welcome_msg())
+                self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
                 client.settimeout(1.0)
                 ack = client.recv()
                 self.assertEqual(ack["type"], protocol.MSG_ACK)
@@ -466,7 +528,7 @@ class ReceiverClipboardTests(unittest.TestCase):
         thread.start()
         try:
             client.send(protocol.hello_msg())
-            self.assertEqual(client.recv(), protocol.welcome_msg())
+            self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
             client.send(protocol.focus_msg("mac"))
             client.settimeout(1.0)
             self.assertEqual(client.recv(), protocol.clipboard_msg("hello from windows"))
@@ -490,7 +552,7 @@ class ReceiverClipboardTests(unittest.TestCase):
             thread.start()
             try:
                 client.send(protocol.hello_msg())
-                self.assertEqual(client.recv(), protocol.welcome_msg())
+                self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
                 client.send(protocol.focus_msg("windows"))
                 client.settimeout(0.3)
                 with self.assertRaises((socket.timeout, TimeoutError)):
@@ -515,7 +577,7 @@ class ReceiverClipboardTests(unittest.TestCase):
             thread.start()
             try:
                 client.send(protocol.hello_msg())
-                self.assertEqual(client.recv(), protocol.welcome_msg())
+                self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
                 client.send(protocol.focus_msg("mac"))
                 client.settimeout(0.3)
                 with self.assertRaises((socket.timeout, TimeoutError)):
@@ -540,7 +602,7 @@ class ReceiverClipboardTests(unittest.TestCase):
             thread.start()
             try:
                 client.send(protocol.hello_msg())
-                self.assertEqual(client.recv(), protocol.welcome_msg())
+                self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
                 client.send(protocol.focus_msg("mac"))
                 client.settimeout(0.3)
                 with self.assertRaises((socket.timeout, TimeoutError)):
@@ -564,7 +626,7 @@ class ReceiverClipboardTests(unittest.TestCase):
         thread.start()
         try:
             client.send(protocol.hello_msg())
-            self.assertEqual(client.recv(), protocol.welcome_msg())
+            self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
             client.send(protocol.clipboard_msg("copied on the Mac"))
             wait_for_calls(clipboard.set_calls, minimum=1)
             self.assertEqual(clipboard.set_calls, [("copied on the Mac", None)])
@@ -587,7 +649,7 @@ class ReceiverClipboardTests(unittest.TestCase):
         thread.start()
         try:
             client.send(protocol.hello_msg())
-            self.assertEqual(client.recv(), protocol.welcome_msg())
+            self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
             oversized = "y" * (protocol.CLIPBOARD_MAX_BYTES + 1)
             client.send(protocol.clipboard_msg(oversized))
             # Follow up with a normal clipboard message and wait for that one
@@ -615,7 +677,7 @@ class ReceiverClipboardTests(unittest.TestCase):
         thread.start()
         try:
             client.send(protocol.hello_msg())
-            self.assertEqual(client.recv(), protocol.welcome_msg())
+            self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
             client.send(protocol.focus_msg("mac"))
             client.settimeout(1.0)
             self.assertEqual(client.recv(), protocol.clipboard_msg("shot.png", FAKE_PNG))
@@ -639,7 +701,7 @@ class ReceiverClipboardTests(unittest.TestCase):
         thread.start()
         try:
             client.send(protocol.hello_msg())
-            self.assertEqual(client.recv(), protocol.welcome_msg())
+            self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
             client.send(protocol.focus_msg("mac"))
             client.settimeout(1.0)
             self.assertEqual(client.recv(), protocol.clipboard_msg("shot.png"))
@@ -662,7 +724,7 @@ class ReceiverClipboardTests(unittest.TestCase):
         thread.start()
         try:
             client.send(protocol.hello_msg())
-            self.assertEqual(client.recv(), protocol.welcome_msg())
+            self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
             client.send({"type": protocol.MSG_CLIPBOARD, "data": {"text": "bad", "image": "not base64!", "image_format": "png"}})
             client.send(protocol.clipboard_msg("shot.png", FAKE_PNG))
             wait_for_calls(clipboard.set_calls, minimum=2)
@@ -689,7 +751,7 @@ class ReceiverClipboardTests(unittest.TestCase):
         thread.start()
         try:
             client.send(protocol.hello_msg())
-            self.assertEqual(client.recv(), protocol.welcome_msg())
+            self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
             client.send(protocol.focus_msg("windows"))
             client.send(protocol.clipboard_msg("from the mac"))
             client.settimeout(1.0)
@@ -723,7 +785,7 @@ class ReceiverCrossingTests(unittest.TestCase):
         )
         thread.start()
         client.send(protocol.hello_msg())
-        self.assertEqual(client.recv(), protocol.welcome_msg())
+        self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
         return server, client, connection, stop_event, thread
 
     @staticmethod
@@ -824,7 +886,7 @@ class ReceiverHandBackTests(unittest.TestCase):
         )
         thread.start()
         client.send(protocol.hello_msg())
-        self.assertEqual(client.recv(), protocol.welcome_msg())
+        self.assertEqual(client.recv(), protocol.welcome_msg(platform="windows"))
         return server, client, connection, thread
 
     @staticmethod
@@ -917,7 +979,7 @@ class ReceiverHandBackTests(unittest.TestCase):
             )
             second_thread.start()
             second_client.send(protocol.hello_msg())
-            self.assertEqual(second_client.recv(), protocol.welcome_msg())
+            self.assertEqual(second_client.recv(), protocol.welcome_msg(platform="windows"))
             wait_for_calls(focuses, minimum=2)
             self.assertEqual(focuses, ["windows", "mac"])
             second_client.close()

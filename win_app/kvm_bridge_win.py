@@ -193,11 +193,13 @@ class StatusBridge(QObject):
     sending = Signal(bool, str)
     redirecting = Signal(bool)
     focus = Signal(str)
-    learned = Signal(str, object, object)
+    learned = Signal(str, object, object, object)
     # Either link, telling us the two machines' arrangement changed at the other end.
     arrangement = Signal(str, int)
     alert = Signal(str, str)
     mac_learned = Signal(str)
+    # The OS the peer's welcome declared, so the config can stop guessing.
+    peer_platform = Signal(str)
 
 
 class WindowsApplication(QWidget):
@@ -256,8 +258,10 @@ class WindowsApplication(QWidget):
         self.sender.send_peer_home = self.server.send_home
         self.sender.on_alert = self.bridge.alert.emit
         self.sender.on_mac_learned = self.bridge.mac_learned.emit
+        self.sender.on_peer_platform = self.bridge.peer_platform.emit
         self.bridge.alert.connect(self._on_alert)
         self.bridge.mac_learned.connect(self._on_mac_learned)
+        self.bridge.peer_platform.connect(self._on_peer_platform)
         self.hooks = capture_win.Hooks(self._on_hook_key, self.sender.on_mouse, self.sender.on_motion)
         self._trigger = capture_win.Trigger()
         self._sending_detail = "Not connected to the Mac"
@@ -480,6 +484,22 @@ class WindowsApplication(QWidget):
         self._config.mac_hardware_address = address
         self._persist()
 
+    def _on_peer_platform(self, platform: str) -> None:
+        """The peer's welcome declared which OS it runs. Written to config so the
+        modifier mapping and the arrangement conversion still agree with it after a
+        restart, rather than only for as long as this link stays up."""
+        if self._config is None or platform not in ("windows", "mac"):
+            return
+        if self._config.peer_target == platform:
+            return
+        self._config.peer_target = platform
+        if not self._persist():
+            return
+        if hasattr(self, "peer_target_choice"):
+            self.peer_target_choice.set_value(platform)
+        self.sender.update_config(self._config)
+        LOGGER.info("peer declared itself %s; saved as the remote machine OS", platform)
+
     def _daily_module(self, current: Config) -> QWidget:
         module = widgets.Module("Every day")
         self.allow_switch = widgets.Switch("Let your Mac drive this PC")
@@ -601,12 +621,18 @@ class WindowsApplication(QWidget):
         self.dragging_switch.toggled.connect(self._set_block_while_dragging)
         module.body.addWidget(self.dragging_switch)
 
+        self.sync_switch = widgets.Switch("Sync edge arrangement with remote machine")
+        self.sync_switch.setFont(theme.font(theme.TYPE["body"]))
+        self.sync_switch.setChecked(getattr(current, "sync_arrangement", True))
+        self.sync_switch.toggled.connect(self._set_sync_arrangement)
+        module.body.addWidget(self.sync_switch)
+
         now_row = QHBoxLayout()
         now_row.setSpacing(6)
-        # Named, not just "Now": this line is the Mac's half of the border --
+        # Named, not just "Now": this line is the remote machine's half of the border --
         # the edge and push it asks for when it is the one sending -- and under
         # a column of this PC's own controls it reads as one of them otherwise.
-        now_row.addWidget(widgets.label("Your Mac asks for:", "note"))
+        now_row.addWidget(widgets.label("Remote machine asks for:", "note"))
         self.return_readout = widgets.label("", "readout", wrap=True)
         now_row.addWidget(self.return_readout, 1)
         module.body.addLayout(now_row)
@@ -620,18 +646,24 @@ class WindowsApplication(QWidget):
         self.corner_choice.set_enabled(self.way_boxes["corner"].isChecked())
         self.sender.update_config(self._config)
 
+    def _set_sync_arrangement(self, enabled: bool) -> None:
+        if self._config is None:
+            return
+        self._config.sync_arrangement = bool(enabled)
+        self._persist()
+
     def _set_arrangement(self, pc_edge: str) -> None:
-        """The edge of THIS PC that leads to the Mac -- one border, walked either way. Not an
-        ordinary save: both machines have to agree on it, so this end's change is timestamped
-        and sent over whichever link is up."""
+        """The edge of THIS PC that leads to the remote machine -- one border, walked either way.
+        Both machines agree on it when sync_arrangement is enabled."""
         if self._config is None or pc_edge == self._config.mac_return_edge:
             return
         self._config.mac_return_edge = pc_edge
         self._config.arrangement_set_at = int(time.time())
         self._persist()
-        mac_edge = return_edge.OPPOSITE[pc_edge]
-        self.sender.send_arrangement(mac_edge, self._config.arrangement_set_at)
-        self.server.send_arrangement(mac_edge, self._config.arrangement_set_at)
+        if getattr(self._config, "sync_arrangement", True):
+            mac_edge = return_edge.OPPOSITE[pc_edge]
+            self.sender.send_arrangement(mac_edge, self._config.arrangement_set_at)
+            self.server.send_arrangement(mac_edge, self._config.arrangement_set_at)
         self.sender.update_config(self._config)
         self._reflect_look()
 
@@ -650,15 +682,27 @@ class WindowsApplication(QWidget):
         self.sender.update_config(self._config)
 
     def _on_arrangement(self, mac_edge: str, set_at: int) -> None:
-        """The Mac changed the arrangement, over either link. `mac_edge` is always the edge of
-        the MAC that leads here; an arrival older than what this end already holds is ignored."""
+        """The remote machine changed the arrangement, over either link.
+        If the peer is a Mac, `mac_edge` is the Mac's edge, so this PC's edge is OPPOSITE[mac_edge].
+        If the peer is another Windows PC, the sender already sent OPPOSITE[sender_edge]
+        (the arrival edge), so this PC's edge is `mac_edge` directly."""
         if self._config is None:
             return
-        if self._config.arrangement_set_at and not protocol.arrangement_wins(set_at, self._config.arrangement_set_at):
-            LOGGER.info("Ignoring an older arrangement from the Mac (%s vs %s)", set_at, self._config.arrangement_set_at)
+        if not getattr(self._config, "sync_arrangement", True):
+            LOGGER.info("Ignoring arrangement from peer because arrangement sync is disabled")
             return
-        pc_edge = return_edge.OPPOSITE.get(mac_edge)
-        if pc_edge is None:
+        if self._config.arrangement_set_at and not protocol.arrangement_wins(set_at, self._config.arrangement_set_at):
+            LOGGER.info("Ignoring an older arrangement from the remote machine (%s vs %s)", set_at, self._config.arrangement_set_at)
+            return
+        peer_is_windows = (
+            getattr(self._config, "peer_target", "mac") == "windows"
+            or getattr(self.sender, "_peer_is_windows", False)
+        )
+        if peer_is_windows:
+            pc_edge = mac_edge
+        else:
+            pc_edge = return_edge.OPPOSITE.get(mac_edge)
+        if pc_edge is None or pc_edge not in return_edge.EDGES:
             return
         self._config.mac_return_edge = pc_edge
         self._config.arrangement_set_at = int(set_at)
@@ -1279,6 +1323,7 @@ class WindowsApplication(QWidget):
                 auth_token=token,
                 paired_with=mac_name,
                 mac_host=mac_host,
+                peer_target="windows",
             )
             save_config(self.config_path, candidate)
             self._apply_config(candidate)
@@ -1332,6 +1377,16 @@ class WindowsApplication(QWidget):
         self.mac_host_readout = self.mac_host_entry
         mac_row.addWidget(self.mac_host_entry, 1)
         module.body.addLayout(mac_row)
+        os_row = QHBoxLayout()
+        os_row.setSpacing(6)
+        os_row.addWidget(widgets.label("Remote machine OS:", "note"))
+        self.peer_target_choice = widgets.Choice(
+            (("windows", "Windows"), ("mac", "macOS")),
+            columns=2,
+            current=current.peer_target or "windows",
+        )
+        os_row.addWidget(self.peer_target_choice.view)
+        module.body.addLayout(os_row)
         self.save_message = widgets.label("", "note", wrap=True)
         module.body.addWidget(self.save_message)
         self.save_button = QPushButton("Save and restart receiver")
@@ -1348,12 +1403,15 @@ class WindowsApplication(QWidget):
     def save(self) -> None:
         current = self._config or default_config()
         try:
+            target_widget = getattr(self, "peer_target_choice", None)
+            target = target_widget.value() if target_widget is not None else current.peer_target
             candidate = replace(
                 current,
                 host=self.host_entry.text().strip() or self._host,
                 port=int(self.port_entry.text().strip()),
                 auth_token=self.token_entry.text(),
                 mac_host=self.mac_host_entry.text().strip(),
+                peer_target=target,
             )
             save_config(self.config_path, candidate)
             self._apply_config(candidate)
@@ -1386,6 +1444,10 @@ class WindowsApplication(QWidget):
         else:
             self._stop_sending()
         self.mac_host_entry.setText(config.mac_host or "")
+        if hasattr(self, "peer_target_choice"):
+            self.peer_target_choice.set_value(config.peer_target or "windows")
+        if hasattr(self, "sync_switch"):
+            self.sync_switch.setChecked(getattr(config, "sync_arrangement", True))
 
     # -- Firewall ---------------------------------------------------------------------------
 
@@ -1657,23 +1719,33 @@ class WindowsApplication(QWidget):
         time, never both."""
         self.sender.set_receiving(target == "windows")
 
-    def _on_learned(self, host, edge, resistance) -> None:
-        """The Mac's address and the way home it named in its hello. Saved, so
-        this PC can open its own link to the Mac before the Mac has crossed --
-        or at all, if the Mac is asleep when Beamer starts here."""
+    def _on_learned(self, host, edge, resistance, platform=None) -> None:
+        """The remote machine's address and the way home it named in its hello. Saved, so
+        this PC can open its own link to the peer before the peer has crossed --
+        or at all, if the peer is asleep when Beamer starts here."""
         if self._config is None:
             return
         if sender.is_this_machine(host):
             # The Mac reached this PC through the macOS 27 localhost tunnel,
             # so its "address" is this PC's own. Saving it would point the
             # outward link at this PC's own receiver.
-            LOGGER.info("Ignoring %s as the Mac's address: that is this PC", host)
+            LOGGER.info("Ignoring %s as the remote address: that is this PC", host)
             host = None
         changed = False
         if host and host != self._config.mac_host and self._config.mac_hardware_address:
-            # A different Mac: the old one's hardware address would wake the wrong machine.
+            # A different machine: the old one's hardware address would wake the wrong machine.
             self._config.mac_hardware_address = ""
             changed = True
+        if platform == "windows":
+            if self._config.peer_target != "windows":
+                self._config.peer_target = "windows"
+                changed = True
+            self.sender._peer_is_windows = True
+        elif platform == "mac":
+            if self._config.peer_target != "mac":
+                self._config.peer_target = "mac"
+                changed = True
+            self.sender._peer_is_windows = False
         for name, value in (("mac_host", host), ("mac_return_edge", edge or ""), ("mac_resistance_px", resistance)):
             if value in (None, "") or getattr(self._config, name) == value:
                 continue
@@ -1681,12 +1753,14 @@ class WindowsApplication(QWidget):
             changed = True
         if not changed:
             return
-        LOGGER.info("Learned the Mac at %s, coming home through the %s edge", self._config.mac_host, self._config.mac_return_edge)
+        LOGGER.info("Learned the peer at %s (target=%s), coming home through the %s edge", self._config.mac_host, self._config.peer_target, self._config.mac_return_edge)
         if not self._persist():
             return
         self.sender.update_config(self._config)
         self._start_sending(self._config)
         self.mac_host_entry.setText(self._config.mac_host or "")
+        if hasattr(self, "peer_target_choice"):
+            self.peer_target_choice.set_value(self._config.peer_target or "windows")
         self.edge_choice.set_value(self._config.mac_return_edge)
         self._reflect_look()
 

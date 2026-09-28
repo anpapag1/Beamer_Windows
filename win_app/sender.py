@@ -172,6 +172,9 @@ class MacSender:
         self._clock = clock
         self.peer_target = peer_target
         self._peer_is_windows_override: Optional[bool] = None
+        # The peer_target last taken from config, so a config that still says
+        # what it said at startup cannot quietly undo what the handshake found.
+        self._peer_target_from_config: Optional[str] = None
 
         self._config = None
         self._config_lock = threading.RLock()
@@ -225,6 +228,9 @@ class MacSender:
         # names a new one; both called off the GUI thread.
         self.on_alert = None
         self.on_mac_learned = None
+        # The OS the peer declares in its welcome, called off the GUI thread so the
+        # app can write it into config. Same deal as the address above: not saved here.
+        self.on_peer_platform = None
         self._wake_sender = wake_sender
         self._mac_lookup = mac_lookup
         self._waking = False
@@ -317,7 +323,13 @@ class MacSender:
         self._edge = edge if edge in return_edge.EDGES else None
         self._rearm_edge()
         peer_target = getattr(config, "peer_target", None)
-        if peer_target:
+        # Only when the configured value actually moved. `update_config` is
+        # called on every arrangement or settings save, and re-applying an
+        # unchanged peer_target here would roll the OS the handshake just
+        # reported back to the stale one on disk -- which is how the modifier
+        # mapping flipped back to the Mac's mid-session.
+        if peer_target and peer_target != self._peer_target_from_config:
+            self._peer_target_from_config = peer_target
             self.peer_target = peer_target
             self._peer_is_windows_override = (peer_target == "windows")
         peer_is_windows = getattr(config, "peer_is_windows", None)
@@ -648,6 +660,7 @@ class MacSender:
     def _connect_once(self, config) -> bool:
         host, port = self._address(config)
         sock = None
+        peer_platform = None
         self._set_status(f"Connecting to the Mac at {host}:{port}")
         try:
             sock = self._socket_factory((host, port), CONNECT_TIMEOUT_SECONDS)
@@ -668,7 +681,9 @@ class MacSender:
                 sock,
                 session,
                 protocol.hello_msg(
-                    return_edge=self._mac_arrival_edge(), resistance_px=int(self._resistance())
+                    return_edge=self._mac_arrival_edge(),
+                    resistance_px=int(self._resistance()),
+                    platform="windows",
                 ),
             )
             try:
@@ -683,6 +698,13 @@ class MacSender:
                 raise protocol.ProtocolError("welcome message missing data")
             if data.get("error") or data.get("version") != protocol.PROTOCOL_VERSION:
                 raise HandshakeError(OLD_RECEIVER_STATUS)
+            peer_platform = data.get("platform")
+            if peer_platform == "windows":
+                self._peer_is_windows = True
+                self.peer_target = "windows"
+            elif peer_platform == "mac":
+                self._peer_is_windows = False
+                self.peer_target = "mac"
             sock.settimeout(SOCKET_IO_TIMEOUT_SECONDS)
         except HandshakeError as exc:
             self._close(sock)
@@ -713,6 +735,11 @@ class MacSender:
         self._set_status(f"Connected to the Mac at {host}")
         LOGGER.info("connected to the Mac at %s:%s", host, port)
         self._learn_mac_address(host)
+        if peer_platform in ("windows", "mac") and self.on_peer_platform is not None:
+            try:
+                self.on_peer_platform(peer_platform)
+            except Exception:
+                LOGGER.exception("on_peer_platform callback failed")
         return True
 
     def _learn_mac_address(self, host) -> None:

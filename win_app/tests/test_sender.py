@@ -448,6 +448,44 @@ class WindowsPeerProtocolTests(unittest.TestCase):
 
 
 
+class PeerPlatformTests(unittest.TestCase):
+    """The OS the peer declares in its welcome drives the modifier mapping, and a
+    settings save must not be able to roll that back to whatever is on disk."""
+
+    def _sender(self, peer_target="mac"):
+        s = sender.MacSender(desktop=FakeDesktop(MONITORS), peer_target=peer_target)
+        s.update_config(make_config(peer_target=peer_target))
+        return s
+
+    def test_an_unchanged_config_cannot_undo_what_the_handshake_found(self):
+        s = self._sender("mac")
+        self.assertFalse(s._peer_is_windows)
+        # What the welcome handshake does when the peer says it is Windows.
+        s.peer_target = "windows"
+        s._peer_is_windows = True
+        # An arrangement or settings save re-sends the same config unchanged.
+        s.update_config(make_config(peer_target="mac"))
+        self.assertTrue(s._peer_is_windows)
+        self.assertEqual(s._wire_name("cmd"), "ctrl")
+
+    def test_a_changed_config_peer_target_still_applies(self):
+        s = self._sender("mac")
+        s.peer_target = "windows"
+        s._peer_is_windows = True
+        s.update_config(make_config(peer_target="windows"))
+        self.assertTrue(s._peer_is_windows)
+        s.update_config(make_config(peer_target="mac"))
+        self.assertFalse(s._peer_is_windows)
+        self.assertEqual(s._wire_name("cmd"), "cmd")
+
+    def test_the_handshake_announces_this_pc_as_windows(self):
+        hello = protocol.hello_msg(return_edge="left", resistance_px=40, platform="windows")
+        self.assertEqual(hello["data"]["platform"], "windows")
+
+    def test_no_platform_is_omitted_rather_than_guessed(self):
+        self.assertNotIn("platform", protocol.hello_msg(return_edge="left")["data"])
+
+
 class NoUnlock:
     def is_locked(self):
         return None

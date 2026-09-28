@@ -81,6 +81,8 @@ class Config:
     # of two ends that disagree is the newer.
     mac_return_edge: str = ""
     arrangement_set_at: int = 0
+    # Whether edge arrangement changes are synced with the peer.
+    sync_arrangement: bool = True
     # What the Mac asks for at the return edge. The PC's own push out has its
     # own number, above: one slider for each direction, because the hand does
     # not feel a trackpad and a mouse the same way.
@@ -205,6 +207,8 @@ def validate_config(config: Config) -> None:
         raise ConfigError("mac_host must be text")
     if config.peer_target not in PEER_TARGETS:
         raise ConfigError(f"peer_target must be one of: {', '.join(PEER_TARGETS)}")
+    if not isinstance(config.sync_arrangement, bool):
+        raise ConfigError("sync_arrangement must be true or false")
     if config.mac_return_edge not in ("",) + EDGES:
         raise ConfigError("mac_return_edge must be an edge name, or empty")
     try:
@@ -245,6 +249,7 @@ def config_from_dict(raw: dict) -> Config:
             peer_target=raw.get("peer_target", "mac"),
             mac_return_edge=raw.get("mac_return_edge", "") or "",
             arrangement_set_at=int(raw.get("arrangement_set_at", 0)),
+            sync_arrangement=bool(raw.get("sync_arrangement", True)),
             mac_resistance_px=int(raw.get("mac_resistance_px", 120)),
             ignored_inputs=raw.get("ignored_inputs", []),
         )
@@ -301,6 +306,7 @@ def config_to_dict(config: Config) -> dict:
         "peer_target": config.peer_target,
         "mac_return_edge": config.mac_return_edge,
         "arrangement_set_at": int(config.arrangement_set_at),
+        "sync_arrangement": bool(config.sync_arrangement),
         "mac_resistance_px": int(config.mac_resistance_px),
         "ignored_inputs": list(config.ignored_inputs),
     }

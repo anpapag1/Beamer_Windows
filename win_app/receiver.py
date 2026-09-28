@@ -117,7 +117,7 @@ class ReceiverServer:
         pressure_callback: Optional[Callable[[str, float, bool], None]] = None,
         injector=None,
         focus_callback: Optional[Callable[[str], None]] = None,
-        peer_callback: Optional[Callable[[str, Optional[str], Optional[int]], None]] = None,
+        peer_callback: Optional[Callable[[str, Optional[str], Optional[int], Optional[str]], None]] = None,
         arrangement_callback: Optional[Callable[[str, int], None]] = None,
         self_name: str = "PC",
         peer_name: str = "Mac",
@@ -138,11 +138,13 @@ class ReceiverServer:
         self._injector = injector
         self._focus_callback = focus_callback
         self._peer_driving = False
-        # `peer_callback(host, return_edge, resistance_px)` fires once per
-        # authenticated connection, with the peer's address and the way home
-        # its hello carried. It is how the machine on this side learns which
-        # border to push out across without anyone configuring it twice --
-        # the way home from there is the way out from here.
+        # `peer_callback(host, return_edge, resistance_px, platform)` fires once per
+        # authenticated connection, with the peer's address, the way home
+        # its hello carried, and the OS the peer declares itself to be --
+        # None when an older peer did not say. It is how the machine on this
+        # side learns which border to push out across without anyone
+        # configuring it twice -- the way home from there is the way out from
+        # here -- and which modifier mapping the peer expects.
         self._peer_callback = peer_callback
         # `arrangement_callback(mac_edge, set_at)` fires when the peer says
         # where the two machines are in relation to each other. Either end may
@@ -416,7 +418,10 @@ class ReceiverServer:
         connection.settimeout(SESSION_READ_TIMEOUT_SECONDS)
         connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         sequence = ProcessedSequence()
-        if not self._send_message(connection, session, protocol.welcome_msg()):
+        # The wire target word for this side is the OS name in both apps, so it
+        # is what gets declared -- not `sys.platform`, which would call this
+        # receiver Windows even where it is configured to act as the Mac.
+        if not self._send_message(connection, session, protocol.welcome_msg(platform=self._self_target)):
             return
 
         with self._lock:
@@ -432,7 +437,8 @@ class ReceiverServer:
             LOGGER.info("Superseding the previous session for %s", peer)
             self._close_socket(previous_client)
 
-        LOGGER.info("Authenticated %s (protocol v%s)", peer, version)
+        peer_platform = hello.get("platform") if isinstance(hello, dict) else None
+        LOGGER.info("Authenticated %s (protocol v%s, platform %s)", peer, version, peer_platform or "unspecified")
         # A peer that has just connected has its input at home, whatever the
         # session it replaced was in the middle of.
         self._hand_back(f"{self._peer_name} reconnected")
@@ -729,8 +735,15 @@ class ReceiverServer:
         resistance = hello.get("resistance_px")
         if isinstance(resistance, bool) or not isinstance(resistance, (int, float)):
             resistance = None
+        platform = hello.get("platform")
+        if platform is None:
+            # A peer that declared nothing is read in this receiver's own terms.
+            # The two apps name the same wire targets as each other's OS, so
+            # this side's configured role is the only thing known here -- and it
+            # is not a guess, it is what this side was set up to be.
+            platform = self._self_target
         try:
-            self._peer_callback(host, edge, None if resistance is None else int(resistance))
+            self._peer_callback(host, edge, None if resistance is None else int(resistance), platform)
         except Exception:
             LOGGER.exception("Peer callback failed")
 

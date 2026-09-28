@@ -1384,12 +1384,16 @@ class KVMController:
             # so Windows knows which of its edges leads back here before this
             # Mac has ever crossed -- which is what lets the PC push its own
             # pointer out across that same border first.
+            # `platform` is what the PC on the other end uses to pick a modifier
+            # mapping before any of its own settings are read, so this side says
+            # it plainly. A receiver that never gets it is left guessing.
             protocol.send_msg(
                 sock,
                 session,
                 protocol.hello_msg(
                     return_edge=self.crossing.home_edge(),
                     resistance_px=int(self.crossing.resistance_px),
+                    platform="mac",
                 ),
             )
             try:

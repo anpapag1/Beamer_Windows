@@ -90,19 +90,49 @@ def owning_monitor(monitors: List[Rect], edge: str) -> Rect:
     return max(monitors, key=lambda r: r.bottom)
 
 
+def _on_edge(monitors: List[Rect], edge: str, bounds: Rect) -> List[tuple]:
+    """The monitors that actually reach `edge`, each as (start, end, monitor)
+    along that border. A staggered or multi-screen layout can leave several, and
+    only one of them holds the point a pointer is arriving at."""
+    if edge in ("left", "right"):
+        line = bounds.x if edge == "left" else bounds.right
+        return [(m.y, m.bottom, m) for m in monitors if (m.x if edge == "left" else m.right) == line]
+    line = bounds.y if edge == "top" else bounds.bottom
+    return [(m.x, m.right, m) for m in monitors if (m.y if edge == "top" else m.bottom) == line]
+
+
+def _holding(candidates: List[tuple], target: int) -> Rect:
+    """The monitor of `candidates` that `target` falls inside, or the nearest one
+    when the point lands in a gap between them rather than off the wall."""
+    for start, end, monitor in candidates:
+        if start <= target <= end:
+            return monitor
+    return min(candidates, key=lambda c: min(abs(target - c[0]), abs(target - c[1])))[2]
+
+
 def arrival_position(monitors: List[Rect], edge: str, offset: float) -> Tuple[int, int]:
     """Where a pointer arriving at `edge`, `offset` of the way along it, lands.
     The fraction is applied against the whole bounding box, then clamped into
-    the owning monitor so a staggered arrangement never lands it in a gap."""
+    the monitor that holds that point on the arriving edge, so a multi-monitor
+    or staggered arrangement lands on the correct display without falling in a
+    gap."""
     bounds = union(monitors)
-    owner = owning_monitor(monitors, edge)
     offset = _clamp(float(offset), 0.0, 1.0)
-    if edge in ("left", "right"):
+    candidates = _on_edge(monitors, edge, bounds)
+    if not candidates:
+        # Nothing lines up with the bounding box -- staggered -- so fall back to
+        # the monitor that owns the edge outright.
+        owner = owning_monitor(monitors, edge)
+    elif edge in ("left", "right"):
+        target = int(round(bounds.y + offset * bounds.height))
+        owner = _holding(candidates, target)
         x = owner.x if edge == "left" else owner.right
-        y = _clamp(int(round(bounds.y + offset * bounds.height)), owner.y, owner.bottom)
+        y = _clamp(target, owner.y, owner.bottom)
     else:
+        target = int(round(bounds.x + offset * bounds.width))
+        owner = _holding(candidates, target)
         y = owner.y if edge == "top" else owner.bottom
-        x = _clamp(int(round(bounds.x + offset * bounds.width)), owner.x, owner.right)
+        x = _clamp(target, owner.x, owner.right)
     return x, y
 
 
