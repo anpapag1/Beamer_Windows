@@ -1049,7 +1049,7 @@ class WindowsApplication(QWidget):
         self.code_entry.setPlaceholderText("6-digit code")
         self.code_entry.setMaxLength(6)
         self.code_entry.setFixedWidth(110)
-        self.code_entry.setFont(theme.mono_font(theme.SIZE_ENTRY))
+        self.code_entry.setFont(theme.mono_font(theme.TYPE["field_mono"]))
         self.code_entry.returnPressed.connect(self._start_client_pair)
         code_box.addWidget(self.code_entry)
 
