@@ -367,6 +367,26 @@ class PairingConfigLogicTests(unittest.TestCase):
         )
         self.assertEqual(candidate.mac_host, "192.168.1.200")
 
+    def test_client_paired_candidate_config_learns_host(self):
+        import app_config
+        current = replace(app_config.default_config(), host="")
+        self.assertEqual(current.host, "")
+        this_host = current.host
+        peer_host = "192.168.1.50"
+        if not this_host and peer_host:
+            this_host = "192.168.1.10"
+        candidate = replace(
+            current,
+            host=this_host or current.host,
+            mac_host=peer_host,
+            port=51820,
+            auth_token="token_xyz",
+            paired_with="OtherPC",
+            peer_target="windows",
+        )
+        self.assertEqual(candidate.host, "192.168.1.10")
+        self.assertEqual(candidate.mac_host, "192.168.1.50")
+
 
 try:
     import kvm_bridge_win

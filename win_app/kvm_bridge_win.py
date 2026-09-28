@@ -1203,7 +1203,7 @@ class WindowsApplication(QWidget):
                     self.code_entry.clear()
                 self._say_client_pairing(status_text, status_tone)
 
-            QTimer.singleShot(0, finish_ui)
+            QTimer.singleShot(0, self, finish_ui)
 
         threading.Thread(target=pair_worker, name="Beamer-client-pair", daemon=True).start()
 
@@ -1221,9 +1221,17 @@ class WindowsApplication(QWidget):
 
     def _on_client_paired(self, token: str, name: str, host: str, port: int) -> None:
         current = self._config or default_config()
+        this_host = self.host_entry.text().strip() if hasattr(self, "host_entry") else ""
+        this_host = this_host or getattr(self, "_host", "") or current.host
+        if not this_host and host:
+            try:
+                this_host = local_address_towards(host)
+            except OSError:
+                pass
         try:
             candidate = replace(
                 current,
+                host=this_host or current.host,
                 mac_host=host,
                 port=port,
                 auth_token=token,
@@ -1236,6 +1244,9 @@ class WindowsApplication(QWidget):
             LOGGER.exception("Client paired token could not be saved")
             self._say_client_pairing(f"Paired, but the configuration could not be saved: {exc}", "note-fault")
             return
+        self._host = candidate.host
+        if hasattr(self, "host_entry"):
+            self.host_entry.setText(candidate.host)
         if hasattr(self, "token_entry"):
             self.token_entry.setText(token)
         if hasattr(self, "port_entry"):
