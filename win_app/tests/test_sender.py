@@ -317,6 +317,67 @@ class ConnectionFailedTests(unittest.TestCase):
         self.assertFalse(self.sender.redirecting)
 
 
+
+class WindowsPeerProtocolTests(unittest.TestCase):
+    def test_switch_from_windows_peer_triggers_switch_back(self):
+        # Verify sender accepts switch_msg target from another Windows receiver
+        s = sender.MacSender(redirect_callback=lambda val: None)
+        s.redirecting = True
+        # Windows receiver sends switch_msg with peer_target ("mac" or "peer" or "windows")
+        s._handle_switch({"target": "mac"})
+        self.assertFalse(s.redirecting)
+
+        s.redirecting = True
+        s._handle_switch({"target": "peer"})
+        self.assertFalse(s.redirecting)
+
+        s.redirecting = True
+        s._handle_switch({"target": "windows"})
+        self.assertFalse(s.redirecting)
+
+        s.redirecting = True
+        s._handle_switch({"target": "unknown"})
+        self.assertTrue(s.redirecting)
+
+    def test_focus_target_when_peer_is_windows(self):
+        s = sender.MacSender(desktop=FakeDesktop(MONITORS), peer_target="windows")
+        s._sock = object()
+        s._last_ack_at = time.monotonic()
+        s.set_redirecting(True)
+        msgs = []
+        while not s._outbound.empty():
+            msgs.append(s._outbound.get_nowait())
+        focus_msgs = [m for m in msgs if m.get("type") == protocol.MSG_FOCUS]
+        self.assertTrue(focus_msgs)
+        self.assertEqual(focus_msgs[0]["data"]["target"], "windows")
+
+        s.set_redirecting(False)
+        msgs = []
+        while not s._outbound.empty():
+            msgs.append(s._outbound.get_nowait())
+        focus_msgs = [m for m in msgs if m.get("type") == protocol.MSG_FOCUS]
+        self.assertTrue(focus_msgs)
+        self.assertEqual(focus_msgs[0]["data"]["target"], "mac")
+
+    def test_set_redirecting_target_parameter(self):
+        s = sender.MacSender(desktop=FakeDesktop(MONITORS))
+        s._sock = object()
+        s._last_ack_at = time.monotonic()
+        s.set_redirecting(True, target="windows")
+        msgs = []
+        while not s._outbound.empty():
+            msgs.append(s._outbound.get_nowait())
+        focus_msgs = [m for m in msgs if m.get("type") == protocol.MSG_FOCUS]
+        self.assertEqual(focus_msgs[0]["data"]["target"], "windows")
+
+        s.set_redirecting(False, target="custom_return")
+        msgs = []
+        while not s._outbound.empty():
+            msgs.append(s._outbound.get_nowait())
+        focus_msgs = [m for m in msgs if m.get("type") == protocol.MSG_FOCUS]
+        self.assertEqual(focus_msgs[0]["data"]["target"], "custom_return")
+
+
 class NoUnlock:
     def is_locked(self):
         return None

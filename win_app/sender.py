@@ -159,6 +159,7 @@ class MacSender:
         clock=time.monotonic,
         wake_sender=wol.send_magic_packet,
         mac_lookup=wol.lookup_mac,
+        peer_target: str = "mac",
     ) -> None:
         self._status_callback = status_callback
         self._redirect_callback = redirect_callback
@@ -169,6 +170,7 @@ class MacSender:
         self._socket_factory = socket_factory
         self._is_local = is_local
         self._clock = clock
+        self.peer_target = peer_target
 
         self._config = None
         self._config_lock = threading.RLock()
@@ -313,6 +315,9 @@ class MacSender:
         edge = getattr(config, "mac_return_edge", "") or None
         self._edge = edge if edge in return_edge.EDGES else None
         self._rearm_edge()
+        peer_target = getattr(config, "peer_target", None)
+        if peer_target:
+            self.peer_target = peer_target
         if previous is not None and self._address(previous) != self._address(config):
             self._drop_connection()
 
@@ -513,7 +518,7 @@ class MacSender:
 
     # -- switching ----------------------------------------------------------
 
-    def set_redirecting(self, value, arrival_edge=None, offset=None) -> bool:
+    def set_redirecting(self, value, arrival_edge=None, offset=None, target=None) -> bool:
         """`arrival_edge` is the Mac edge the pointer arrives at and `offset`
         the fraction along it -- the same fraction it left this PC at, which
         is what makes one border out of two screens. Both are absent when the
@@ -541,16 +546,21 @@ class MacSender:
             self._pin_point = self._desktop_module().cursor_position()
             arrival = arrival_edge if arrival_edge in return_edge.EDGES else None
             self._enqueue_control({"type": _LOCAL_CLIPBOARD_SENTINEL_TYPE, "data": {}})
+            outbound_target = (
+                target
+                if target is not None
+                else ("windows" if getattr(self, "peer_target", "mac") == "windows" else "mac")
+            )
             self._enqueue_control(
                 protocol.focus_msg(
-                    "mac",
+                    outbound_target,
                     edge=arrival,
                     offset=offset,
                     return_edge=arrival or self._mac_arrival_edge(),
                     resistance_px=int(self._resistance()),
                 )
             )
-            LOGGER.info("redirecting input to the Mac")
+            LOGGER.info("redirecting input to the %s", outbound_target)
         else:
             # The flag first, so the hook thread stops adding keys; then
             # whatever is still down on the Mac is released there before the
@@ -566,7 +576,12 @@ class MacSender:
             # breakthrough so a burst of deltas still in flight could not
             # cross twice, and nothing else re-arms it.
             self._rearm_edge()
-            self._enqueue_control(protocol.focus_msg("windows"))
+            return_target = (
+                target
+                if target is not None
+                else ("mac" if getattr(self, "peer_target", "mac") == "windows" else "windows")
+            )
+            self._enqueue_control(protocol.focus_msg(return_target))
             LOGGER.info("input returned to this PC")
         if self._redirect_callback is not None:
             try:
@@ -581,10 +596,10 @@ class MacSender:
         self.set_redirecting(not self.redirecting)
 
     def _handle_switch(self, data) -> None:
-        """The Mac pushed the pointer back through its return edge. Stop
+        """The peer pushed the pointer back through its return edge. Stop
         sending, then land the pointer on the edge of this PC it comes back
         to."""
-        if not isinstance(data, dict) or data.get("target") != "windows":
+        if not isinstance(data, dict) or data.get("target") not in ("windows", "mac", "peer"):
             return
         self.set_redirecting(False)
         edge = data.get("edge")
