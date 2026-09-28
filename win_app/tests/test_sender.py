@@ -438,7 +438,7 @@ class WindowsPeerProtocolTests(unittest.TestCase):
 
     def test_windows_peer_custom_key_map_override(self):
         s = sender.MacSender(desktop=FakeDesktop(MONITORS), peer_target="windows")
-        cfg = make_config()
+        cfg = make_config(peer_target="windows")
         cfg.key_map = {"cmd": "alt", "f1": "escape"}
         s.update_config(cfg)
         self.assertEqual(s._wire_name("cmd"), "alt")

@@ -59,8 +59,8 @@ class PeerTargetConfigTests(unittest.TestCase):
         self.assertEqual(config.peer_target, "windows")
         self.assertEqual(config_to_dict(config)["peer_target"], "windows")
 
-    def test_rejects_non_string_peer_target(self):
-        for bad_value in (123, True, False, ["windows"], {"target": "mac"}):
+    def test_rejects_invalid_peer_target(self):
+        for bad_value in (123, True, False, ["windows"], {"target": "mac"}, "linux", "unknown", ""):
             with self.subTest(bad_value=bad_value):
                 with self.assertRaises(ConfigError) as caught:
                     config_from_dict({**BASE, "peer_target": bad_value})
@@ -73,6 +73,18 @@ class PeerTargetConfigTests(unittest.TestCase):
             app_config.save_config(path, config)
             loaded = app_config.load_config(path)
             self.assertEqual(loaded.peer_target, "windows")
+
+
+class MacHostConfigTests(unittest.TestCase):
+    def test_custom_mac_host_persists_across_save_and_load(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            config = config_from_dict({**BASE, "mac_host": "192.168.1.50"})
+            self.assertEqual(config.mac_host, "192.168.1.50")
+            self.assertEqual(config_to_dict(config)["mac_host"], "192.168.1.50")
+            app_config.save_config(path, config)
+            loaded = app_config.load_config(path)
+            self.assertEqual(loaded.mac_host, "192.168.1.50")
 
 
 

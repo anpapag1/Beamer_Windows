@@ -33,6 +33,7 @@ TRIGGER_KEYS = {name: capture_win.VK_TITLES[vk] for name, vk in TRIGGER_VKS.item
 # Windows gives a window no key-down for Print Screen, so it cannot be recorded at all.
 UNRECORDABLE_TRIGGER_VKS = {0x08, 0x09, 0x0D, 0x1B, 0x20, 0x2C}
 MODIFIER_STYLES = ("semantic", "positional")
+PEER_TARGETS = ("mac", "windows")
 
 
 class ConfigError(Exception):
@@ -202,8 +203,8 @@ def validate_config(config: Config) -> None:
         raise ConfigError("send_to_mac must be true or false")
     if not isinstance(config.mac_host, str):
         raise ConfigError("mac_host must be text")
-    if not isinstance(config.peer_target, str):
-        raise ConfigError("peer_target must be text")
+    if config.peer_target not in PEER_TARGETS:
+        raise ConfigError(f"peer_target must be one of: {', '.join(PEER_TARGETS)}")
     if config.mac_return_edge not in ("",) + EDGES:
         raise ConfigError("mac_return_edge must be an edge name, or empty")
     try:
