@@ -171,6 +171,7 @@ class MacSender:
         self._is_local = is_local
         self._clock = clock
         self.peer_target = peer_target
+        self._peer_is_windows_override: Optional[bool] = None
 
         self._config = None
         self._config_lock = threading.RLock()
@@ -318,8 +319,22 @@ class MacSender:
         peer_target = getattr(config, "peer_target", None)
         if peer_target:
             self.peer_target = peer_target
+            self._peer_is_windows_override = (peer_target == "windows")
+        peer_is_windows = getattr(config, "peer_is_windows", None)
+        if peer_is_windows is not None:
+            self._peer_is_windows_override = bool(peer_is_windows)
         if previous is not None and self._address(previous) != self._address(config):
             self._drop_connection()
+
+    @property
+    def _peer_is_windows(self) -> bool:
+        if getattr(self, "_peer_is_windows_override", None) is not None:
+            return self._peer_is_windows_override
+        return getattr(self, "peer_target", "mac") == "windows"
+
+    @_peer_is_windows.setter
+    def _peer_is_windows(self, value: bool) -> None:
+        self._peer_is_windows_override = value
 
     @staticmethod
     def _address(config):
@@ -383,7 +398,15 @@ class MacSender:
 
     def _wire_name(self, name: str) -> str:
         """The capture names Ctrl "cmd" and the Windows key "ctrl", the Semantic style;
-        Positional swaps them back, so each key arrives as the Mac key in its place."""
+        Positional swaps them back, so each key arrives as the Mac key in its place.
+        When talking to another Windows PC, 1:1 modifier mapping is applied so Ctrl remains
+        Ctrl (wire "ctrl") and Win remains Win (wire "cmd").
+        Custom key_map overrides are respected."""
+        key_map = self._setting("key_map", None)
+        if isinstance(key_map, dict) and name in key_map:
+            return key_map[name]
+        if self._peer_is_windows:
+            return POSITIONAL_SWAP.get(name, name)
         if self._setting("modifier_style", "semantic") == "positional":
             return POSITIONAL_SWAP.get(name, name)
         return name
@@ -549,7 +572,7 @@ class MacSender:
             outbound_target = (
                 target
                 if target is not None
-                else ("windows" if getattr(self, "peer_target", "mac") == "windows" else "mac")
+                else ("windows" if self._peer_is_windows else "mac")
             )
             self._enqueue_control(
                 protocol.focus_msg(
@@ -579,7 +602,7 @@ class MacSender:
             return_target = (
                 target
                 if target is not None
-                else ("mac" if getattr(self, "peer_target", "mac") == "windows" else "windows")
+                else ("mac" if self._peer_is_windows else "windows")
             )
             self._enqueue_control(protocol.focus_msg(return_target))
             LOGGER.info("input returned to this PC")

@@ -377,6 +377,76 @@ class WindowsPeerProtocolTests(unittest.TestCase):
         focus_msgs = [m for m in msgs if m.get("type") == protocol.MSG_FOCUS]
         self.assertEqual(focus_msgs[0]["data"]["target"], "custom_return")
 
+    def test_windows_peer_wire_name_modifier_mapping(self):
+        s = sender.MacSender(desktop=FakeDesktop(MONITORS), peer_target="windows")
+        self.assertTrue(s._peer_is_windows)
+        # Ctrl captured as "cmd"/"cmd_r" becomes wire "ctrl"/"ctrl_r"
+        self.assertEqual(s._wire_name("cmd"), "ctrl")
+        self.assertEqual(s._wire_name("cmd_r"), "ctrl_r")
+        # Win captured as "ctrl"/"ctrl_r" becomes wire "cmd"/"cmd_r"
+        self.assertEqual(s._wire_name("ctrl"), "cmd")
+        self.assertEqual(s._wire_name("ctrl_r"), "cmd_r")
+        # Other modifiers and keys remain unchanged
+        self.assertEqual(s._wire_name("alt"), "alt")
+        self.assertEqual(s._wire_name("alt_r"), "alt_r")
+        self.assertEqual(s._wire_name("shift"), "shift")
+        self.assertEqual(s._wire_name("shift_r"), "shift_r")
+        self.assertEqual(s._wire_name("c"), "c")
+
+    def test_peer_is_windows_flag_override(self):
+        s = sender.MacSender(desktop=FakeDesktop(MONITORS), peer_target="mac")
+        self.assertFalse(s._peer_is_windows)
+        self.assertEqual(s._wire_name("cmd"), "cmd")
+        s._peer_is_windows = True
+        self.assertTrue(s._peer_is_windows)
+        self.assertEqual(s._wire_name("cmd"), "ctrl")
+
+    def test_windows_peer_on_key_sends_identity_modifiers(self):
+        s = sender.MacSender(desktop=FakeDesktop(MONITORS), peer_target="windows")
+        s._sock = object()
+        s._last_ack_at = time.monotonic()
+        s.set_redirecting(True)
+        while not s._outbound.empty():
+            s._outbound.get_nowait()
+
+        # Physical Ctrl press on Windows is captured as "cmd"
+        s.on_key("cmd", True, vk=0xA2)
+        s.on_key("c", True, vk=0x43)
+        s.on_key("c", False, vk=0x43)
+        s.on_key("cmd", False, vk=0xA2)
+
+        # Physical Win press on Windows is captured as "ctrl"
+        s.on_key("ctrl", True, vk=0x5B)
+        s.on_key("ctrl", False, vk=0x5B)
+
+        msgs = []
+        while not s._outbound.empty():
+            msgs.append(s._outbound.get_nowait())
+
+        key_msgs = [(m["type"], m["data"]["key"]) for m in msgs if m.get("type") in (protocol.MSG_KEYDOWN, protocol.MSG_KEYUP)]
+        self.assertEqual(
+            key_msgs,
+            [
+                (protocol.MSG_KEYDOWN, "ctrl"),
+                (protocol.MSG_KEYDOWN, "c"),
+                (protocol.MSG_KEYUP, "c"),
+                (protocol.MSG_KEYUP, "ctrl"),
+                (protocol.MSG_KEYDOWN, "cmd"),
+                (protocol.MSG_KEYUP, "cmd"),
+            ],
+        )
+
+    def test_windows_peer_custom_key_map_override(self):
+        s = sender.MacSender(desktop=FakeDesktop(MONITORS), peer_target="windows")
+        cfg = make_config()
+        cfg.key_map = {"cmd": "alt", "f1": "escape"}
+        s.update_config(cfg)
+        self.assertEqual(s._wire_name("cmd"), "alt")
+        self.assertEqual(s._wire_name("f1"), "escape")
+        # Non-overridden modifiers still use 1:1 Windows mapping
+        self.assertEqual(s._wire_name("ctrl"), "cmd")
+
+
 
 class NoUnlock:
     def is_locked(self):
