@@ -16,6 +16,7 @@ from PySide6.QtGui import QColor, QDesktopServices, QIcon, QKeySequence, QPainte
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -50,7 +51,8 @@ import desktop_win
 from edge_glow import EdgeGlow, GlowPreview as EdgeGlowPreview, PreviewLoop
 import firewall_win
 import ignored
-from pairing import PAIRING_PORT, Announcer, local_address_towards
+import pairing
+from pairing import PAIRING_PORT, Announcer, Discovery, local_address_towards
 import pages_win
 import protocol
 from receiver import ReceiverServer, ServerState
@@ -186,6 +188,7 @@ class StatusBridge(QObject):
     pressure = Signal(str, float, bool)
     firewall = Signal(object)
     paired = Signal(str, str, str)
+    client_paired = Signal(str, str, str, int)
     # The other direction: this PC's own input going to the Mac.
     sending = Signal(bool, str)
     redirecting = Signal(bool)
@@ -213,6 +216,7 @@ class WindowsApplication(QWidget):
         self.bridge.pressure.connect(self._on_pressure)
         self.bridge.firewall.connect(self._on_firewall)
         self.bridge.paired.connect(self._on_paired)
+        self.bridge.client_paired.connect(self._on_client_paired)
         self.bridge.sending.connect(self._on_sending)
         self.bridge.redirecting.connect(self._on_redirecting)
         self.bridge.focus.connect(self._on_focus)
@@ -221,6 +225,10 @@ class WindowsApplication(QWidget):
         # Announces this PC from launch, configured or not: pairing is how a fresh install
         # gets its token, so it cannot wait for the receiver to be listening.
         self.announcer = Announcer(self._announced_port, self.bridge.paired.emit, logger=LOGGER)
+        self.discovery = pairing.Discovery(logger=LOGGER)
+        self.discovery.start()
+        self._pairing_client_active = False
+        self._discovered_pcs_key = None
         self._code_shown = False
         self._firewall_advice: Optional[firewall_win.Advice] = None
         self._firewall_status: Optional[firewall_win.FirewallStatus] = None
@@ -1013,6 +1021,54 @@ class WindowsApplication(QWidget):
         layout.addWidget(module)
         self._say_pairing(f"Paired with {current.paired_with}." if current.paired_with else PAIR_HINT, "note")
 
+        client_module = widgets.Module("Pair with a discovered computer")
+        client_head = QHBoxLayout()
+        client_head.setSpacing(16)
+        client_head.addWidget(client_module.eyebrow, 0, Qt.AlignmentFlag.AlignTop)
+        self.client_pair_note = widgets.label("", "note", wrap=True)
+        self.client_pair_status = self.client_pair_note
+        self.client_pair_note.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        client_head.addWidget(self.client_pair_note, 1)
+        client_module.body.addLayout(client_head)
+
+        client_grid = QGridLayout()
+        client_grid.setHorizontalSpacing(10)
+        client_grid.setVerticalSpacing(10)
+        client_grid.setColumnStretch(1, 1)
+
+        self.device_combo = QComboBox()
+        self.device_combo.setMinimumWidth(220)
+        self.discovered_combo = self.device_combo
+        client_grid.addWidget(widgets.label("Discovered device", "key"), 0, 0)
+        client_grid.addWidget(self.device_combo, 0, 1)
+
+        code_box = QHBoxLayout()
+        code_box.setSpacing(8)
+        self.code_entry = QLineEdit()
+        self.client_code_entry = self.code_entry
+        self.code_entry.setPlaceholderText("6-digit code")
+        self.code_entry.setMaxLength(6)
+        self.code_entry.setFixedWidth(110)
+        self.code_entry.setFont(theme.mono_font(theme.SIZE_ENTRY))
+        self.code_entry.returnPressed.connect(self._start_client_pair)
+        code_box.addWidget(self.code_entry)
+
+        self.client_pair_button = QPushButton("Pair")
+        self.pair_client_button = self.client_pair_button
+        self.client_pair_button.setProperty("vernier", "primary")
+        self.client_pair_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.client_pair_button.clicked.connect(self._start_client_pair)
+        code_box.addWidget(self.client_pair_button)
+        code_box.addStretch(1)
+
+        client_grid.addWidget(widgets.label("Pairing code", "key"), 1, 0)
+        client_grid.addLayout(code_box, 1, 1)
+
+        client_module.body.addLayout(client_grid)
+        layout.addWidget(client_module)
+        self._say_client_pairing("Select a discovered computer and enter the 6-digit code shown on its screen.", "note")
+        self._refresh_discovered_devices()
+
     def _toggle_pairing(self) -> None:
         if self.announcer.code is not None:
             self.announcer.cancel_pairing()
@@ -1024,6 +1080,10 @@ class WindowsApplication(QWidget):
         self._refresh_pairing()
 
     def _refresh_pairing(self) -> None:
+        self._refresh_host_pairing()
+        self._refresh_discovered_devices()
+
+    def _refresh_host_pairing(self) -> None:
         code = self.announcer.code
         if code is not None:
             seconds = self.announcer.seconds_left
@@ -1053,15 +1113,143 @@ class WindowsApplication(QWidget):
         elif outcome is None:
             self._say_pairing("Pairing cancelled.", "note")
 
+    def _refresh_discovered_devices(self) -> None:
+        if not hasattr(self, "device_combo"):
+            return
+        if getattr(self, "_pairing_client_active", False):
+            return
+        pcs = self.discovery.pcs() if hasattr(self, "discovery") and self.discovery is not None else []
+        current_data = self.device_combo.currentData()
+        current_addr = current_data.get("address") if isinstance(current_data, dict) else None
+        key = (current_addr, tuple((pc["name"], pc["address"], pc["port"], pc.get("pair_id")) for pc in pcs))
+        if key == getattr(self, "_discovered_pcs_key", None):
+            return
+        self._discovered_pcs_key = key
+
+        self.device_combo.blockSignals(True)
+        self.device_combo.clear()
+        if not pcs:
+            self.device_combo.addItem("No devices found", None)
+            if hasattr(self, "client_pair_button"):
+                self.client_pair_button.setEnabled(False)
+        else:
+            selected_idx = 0
+            for idx, pc in enumerate(pcs):
+                code_tag = " (showing code)" if pc.get("pair_id") else ""
+                label = f"{pc['name']} ({pc['address']}){code_tag}"
+                self.device_combo.addItem(label, pc)
+                if current_addr and pc["address"] == current_addr:
+                    selected_idx = idx
+            self.device_combo.setCurrentIndex(selected_idx)
+            if hasattr(self, "client_pair_button"):
+                self.client_pair_button.setEnabled(True)
+        self.device_combo.blockSignals(False)
+
+    def _start_client_pair(self) -> None:
+        if getattr(self, "_pairing_client_active", False):
+            return
+        if not hasattr(self, "device_combo"):
+            return
+        pc = self.device_combo.currentData()
+        if not isinstance(pc, dict):
+            self._say_client_pairing("Select a discovered computer to pair with.", "note-amber")
+            return
+        code = self.code_entry.text().strip().replace(" ", "") if hasattr(self, "code_entry") else ""
+        if len(code) != pairing.CODE_DIGITS or not code.isdigit():
+            self._say_client_pairing(f"The code must be {pairing.CODE_DIGITS} digits.", "note-fault")
+            return
+
+        pcs = self.discovery.pcs() if hasattr(self, "discovery") and self.discovery is not None else []
+        latest_pc = next((p for p in pcs if p["address"] == pc["address"]), pc)
+        if not latest_pc.get("pair_id"):
+            self._say_client_pairing(f"{latest_pc['name']} is not showing a code. Start pairing on it first.", "note-amber")
+            return
+
+        self._pairing_client_active = True
+        if hasattr(self, "client_pair_button"):
+            self.client_pair_button.setEnabled(False)
+        self._say_client_pairing(f"Pairing with {latest_pc['name']}...", "note")
+
+        def pair_worker():
+            status_text = ""
+            status_tone = "note"
+            try:
+                token = self.discovery.pair(latest_pc, code)
+                self.bridge.client_paired.emit(token, latest_pc["name"], latest_pc["address"], latest_pc["port"])
+                status_text = f"Paired with {latest_pc['name']}."
+                status_tone = "note-live"
+            except pairing.PairingError as exc:
+                err = str(exc)
+                if err == pairing.ERROR_NOT_PAIRING:
+                    status_text = f"{latest_pc['name']} is no longer showing a code."
+                elif err == pairing.ERROR_REFUSED:
+                    status_text = "The code was refused. Check the digits and try again."
+                elif err == "no_answer":
+                    status_text = f"{latest_pc['name']} did not answer. Check the network connection."
+                else:
+                    status_text = f"Pairing failed: {err}"
+                status_tone = "note-fault"
+            except Exception as exc:
+                LOGGER.exception("Pairing failed unexpectedly")
+                status_text = f"Pairing failed: {exc}"
+                status_tone = "note-fault"
+            finally:
+                self._pairing_client_active = False
+
+            def finish_ui():
+                if hasattr(self, "client_pair_button"):
+                    self.client_pair_button.setEnabled(True)
+                if status_tone == "note-live" and hasattr(self, "code_entry"):
+                    self.code_entry.clear()
+                self._say_client_pairing(status_text, status_tone)
+
+            QTimer.singleShot(0, finish_ui)
+
+        threading.Thread(target=pair_worker, name="Beamer-client-pair", daemon=True).start()
+
     def _say_pairing(self, text: str, tone: str) -> None:
-        if text != self.pair_note.text():
-            self.pair_note.setText(text)
-        widgets.set_role(self.pair_note, tone)
+        if hasattr(self, "pair_note"):
+            if text != self.pair_note.text():
+                self.pair_note.setText(text)
+            widgets.set_role(self.pair_note, tone)
+
+    def _say_client_pairing(self, text: str, tone: str = "note") -> None:
+        if hasattr(self, "client_pair_note"):
+            if text != self.client_pair_note.text():
+                self.client_pair_note.setText(text)
+            widgets.set_role(self.client_pair_note, tone)
+
+    def _on_client_paired(self, token: str, name: str, host: str, port: int) -> None:
+        current = self._config or default_config()
+        try:
+            candidate = replace(
+                current,
+                mac_host=host,
+                port=port,
+                auth_token=token,
+                paired_with=name,
+                peer_target="windows",
+            )
+            save_config(self.config_path, candidate)
+            self._apply_config(candidate)
+        except (ConfigError, TypeError, ValueError, OSError) as exc:
+            LOGGER.exception("Client paired token could not be saved")
+            self._say_client_pairing(f"Paired, but the configuration could not be saved: {exc}", "note-fault")
+            return
+        if hasattr(self, "token_entry"):
+            self.token_entry.setText(token)
+        if hasattr(self, "port_entry"):
+            self.port_entry.setText(str(port))
+        self._refresh_pairing()
+        who = name or host
+        self._say_client_pairing(f"Paired with {who}.", "note-live")
+        LOGGER.info("Client paired with %s (%s:%d)", who, host, port)
 
     def _on_paired(self, token: str, mac_name: str, mac_address: str) -> None:
         current = self._config or default_config()
-        host = self.host_entry.text().strip() or self._host
-        if not host:
+        host = self.host_entry.text().strip() if hasattr(self, "host_entry") else ""
+        host = host or getattr(self, "_host", "") or current.host
+        if not host and mac_address:
             # A fresh install knows no address of its own; the one facing the Mac is the one
             # to show.
             try:
@@ -1069,12 +1257,17 @@ class WindowsApplication(QWidget):
             except OSError:
                 pass
         try:
+            mac_host = current.mac_host
+            if mac_address and not mac_host:
+                mac_host = mac_address
+            port = int(self.port_entry.text().strip()) if hasattr(self, "port_entry") and self.port_entry.text().strip() else current.port
             candidate = replace(
                 current,
                 host=host,
-                port=int(self.port_entry.text().strip() or current.port),
+                port=port,
                 auth_token=token,
                 paired_with=mac_name,
+                mac_host=mac_host,
             )
             save_config(self.config_path, candidate)
             self._apply_config(candidate)
@@ -1083,8 +1276,10 @@ class WindowsApplication(QWidget):
             self._say_pairing(f"Paired, but the token could not be saved: {exc}", "note-fault")
             return
         self._host = candidate.host
-        self.host_entry.setText(candidate.host)
-        self.token_entry.setText(token)
+        if hasattr(self, "host_entry"):
+            self.host_entry.setText(candidate.host)
+        if hasattr(self, "token_entry"):
+            self.token_entry.setText(token)
         self._refresh_pairing()
         who = mac_name or "your Mac"
         self._say_pairing(f"Paired with {who}. The receiver restarted with the new token.", "note-live")
@@ -1496,6 +1691,7 @@ class WindowsApplication(QWidget):
         return self._config.port if self._config is not None else default_config().port
 
     def show_window(self) -> None:
+        self.discovery.start()
         self.showNormal()
         self.raise_()
         self.activateWindow()
@@ -1540,6 +1736,7 @@ class WindowsApplication(QWidget):
         self._closing = True
         self.refresh_timer.stop()
         self.announcer.stop()
+        self.discovery.stop()
         self.server.stop()
         self._stop_sending()
         if self.glow is not None:
@@ -1549,6 +1746,7 @@ class WindowsApplication(QWidget):
 
     def closeEvent(self, event) -> None:
         """Closing the window hides to the tray; the tray's Quit ends the process."""
+        self.discovery.stop()
         if self._closing:
             super().closeEvent(event)
             return
