@@ -301,6 +301,11 @@ class DiscoveryPairingTests(unittest.TestCase):
         t = threading.Thread(target=host_loop, daemon=True)
         t.start()
 
+        for _ in range(50):
+            if discovery._sock is not None:
+                break
+            time.sleep(0.02)
+
         try:
             fake_pc = {
                 "name": "HostPC",
